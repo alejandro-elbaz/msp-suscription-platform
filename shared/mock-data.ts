@@ -1,0 +1,46 @@
+import type { Client, Service } from './types';
+export const MOCK_CLIENTS: Client[] = [
+  {
+    id: 'cl-acme-corp',
+    name: 'Acme Corporation',
+    contactPerson: 'John Doe',
+    email: 'john.doe@acme.com',
+    status: 'active',
+    createdAt: new Date('2023-01-15T09:00:00Z').getTime(),
+  },
+  {
+    id: 'cl-stark-industries',
+    name: 'Stark Industries',
+    contactPerson: 'Jane Smith',
+    email: 'jane.smith@stark.com',
+    status: 'active',
+    createdAt: new Date('2023-02-20T14:30:00Z').getTime(),
+  },
+  {
+    id: 'cl-wayne-enterprises',
+    name: 'Wayne Enterprises',
+    contactPerson: 'Peter Jones',
+    email: 'peter.jones@wayne.com',
+    status: 'inactive',
+    createdAt: new Date('2023-03-10T11:00:00Z').getTime(),
+  },
+];
+export const MOCK_SERVICES: Service[] = [
+  { id: 'svc-m365-prem', name: 'Microsoft Office 365 Business Premium', category: 'SaaS', description: 'Full suite of Office apps and cloud services.' },
+  { id: 'svc-m365-std', name: 'Microsoft Office 365 Standard', category: 'SaaS', description: 'Web and mobile versions of Office apps.' },
+  { id: 'svc-m365-room', name: 'Microsoft Room Conference Licenses', category: 'SaaS', description: 'Licenses for conference room equipment.' },
+  { id: 'svc-m365-dlp', name: 'Office 365 Data Loss Prevention', category: 'Cybersecurity', description: 'Protect sensitive information.' },
+  { id: 'svc-xdr-endpoint', name: 'XDR End Point Platform', category: 'Cybersecurity', description: 'Extended Detection and Response for endpoints.' },
+  { id: 'svc-gworkspace', name: 'Google Workspace', category: 'SaaS', description: 'Google\'s suite of cloud computing and collaboration tools.' },
+  { id: 'svc-email-sig', name: 'Email Signatures Platform', category: 'SaaS', description: 'Centralized management of email signatures.' },
+  { id: 'svc-backup-o365', name: 'Backup Office 365 full Instance', category: 'SaaS', description: 'Comprehensive backup for Office 365.' },
+  { id: 'svc-entra-p2', name: 'Microsoft Entra ID P2', category: 'Cybersecurity', description: 'Advanced identity and access management.' },
+  { id: 'svc-aws-cloud', name: 'AWS Cloud Resources (WED & DEVELOP)', category: 'IaaS', description: 'Amazon Web Services infrastructure.' },
+  { id: 'svc-backup-aws', name: 'Backup AWS resources', category: 'IaaS', description: 'Backup solutions for AWS infrastructure.' },
+  { id: 'svc-cf-security', name: 'Cybersecurity Resources Cloudflare', category: 'Cybersecurity', description: 'Cloudflare security services.' },
+  { id: 'svc-paloalto-fw', name: 'Cybersecurity Resources Firewall Paloalto', category: 'Cybersecurity', description: 'Palo Alto Networks firewall.' },
+  { id: 'svc-figma', name: 'Figma Platform', category: 'Creative', description: 'Collaborative interface design tool.' },
+  { id: 'svc-github', name: 'GitHub Platform', category: 'Development', description: 'Code hosting platform for version control.' },
+  { id: 'svc-adobe-cc', name: 'Creative Cloud & Adobe Stock', category: 'Creative', description: 'Suite of Adobe creative applications.' },
+  { id: 'svc-slack', name: 'Slack Platform', category: 'Collaboration', description: 'Channel-based messaging platform.' },
+];
