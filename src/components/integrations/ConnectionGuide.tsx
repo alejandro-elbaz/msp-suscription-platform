@@ -17,9 +17,13 @@ interface ConnectionGuideProps {
 }
 export function ConnectionGuide({ integration, initialState }: ConnectionGuideProps) {
   const [connectionStatus, setConnectionStatus] = useState<IntegrationStatus>('not_connected');
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   useEffect(() => {
     if (initialState) {
       setConnectionStatus(initialState.status);
+      setLastSyncedAt(initialState.lastSyncedAt ?? null);
     }
   }, [initialState]);
   const formSchema = z.object(
@@ -41,29 +45,70 @@ export function ConnectionGuide({ integration, initialState }: ConnectionGuidePr
     resolver: zodResolver(formSchema),
   });
   const onSubmit = async (data: FormData) => {
-    toast.info(`Connecting to ${integration.name}...`);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    // Simulate success/failure
-    const isSuccess = Math.random() > 0.2; // 80% success rate
-    const newStatus: IntegrationStatus = isSuccess ? 'connected' : 'error';
+    toast.info(`Saving credentials for ${integration.name}...`);
     try {
       await api(`/api/integration-states/${integration.id}`, {
         method: 'POST',
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify({
+          status: 'connected',
+          config: data,
+        }),
       });
-      setConnectionStatus(newStatus);
-      if (isSuccess) {
-        toast.success(`Successfully connected to ${integration.name}!`);
-      } else {
-        toast.error(`Failed to connect to ${integration.name}.`, {
-          description: "Please check your credentials and try again.",
-        });
-      }
+      setConnectionStatus('connected');
+      toast.success(`Credentials saved. Run a test to verify connectivity.`);
     } catch (error) {
       toast.error("Failed to save integration status.", {
         description: error instanceof Error ? error.message : "Unknown error",
       });
+    }
+  };
+  const formatLastSync = (timestamp: number | null) => {
+    if (!timestamp) return 'Never synced';
+    try {
+      return new Date(timestamp).toLocaleString();
+    } catch {
+      return 'Unknown';
+    }
+  };
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    try {
+      const result = await api<{ success: boolean; skuCount?: number }>(`/api/integrations/m365/test`, {
+        method: 'POST',
+      });
+      if (result.success) {
+        toast.success(`Successfully reached Microsoft Graph`, {
+          description: `Found ${result.skuCount ?? 0} subscribed SKUs.`,
+        });
+        setConnectionStatus('connected');
+      } else {
+        toast.error('Test completed with warnings.');
+      }
+    } catch (error) {
+      setConnectionStatus('error');
+      toast.error('Test failed', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      });
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+  const handleManualSync = async () => {
+    setSyncing(true);
+    try {
+      const result = await api<{ syncedAt: number }>(`/api/integrations/m365/sync`, {
+        method: 'POST',
+      });
+      setLastSyncedAt(result.syncedAt);
+      toast.success('Microsoft 365 data synced.', {
+        description: `Last sync: ${formatLastSync(result.syncedAt)}`,
+      });
+    } catch (error) {
+      toast.error('Sync failed', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      });
+    } finally {
+      setSyncing(false);
     }
   };
   const hasFields = integration.steps.some(step => step.fields);
@@ -126,12 +171,41 @@ export function ConnectionGuide({ integration, initialState }: ConnectionGuidePr
                   </div>
                 )}
               </div>
-              <Button type="submit" disabled={isSubmitting || connectionStatus === 'connected'}>
+              <Button type="submit" disabled={isSubmitting}>
                 {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {connectionStatus === 'connected' ? 'Connected' : 'Connect'}
+                Save Credentials
               </Button>
             </CardFooter>
           </form>
+        </Card>
+      )}
+      {integration.id === 'microsoft-365' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Connection Status</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Current status</p>
+                <p className="text-lg font-medium capitalize">{connectionStatus.replace('_', ' ')}</p>
+              </div>
+              <Button variant="outline" onClick={handleTestConnection} disabled={testingConnection}>
+                {testingConnection && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Test Connection
+              </Button>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Last successful sync</p>
+                <p className="text-lg font-medium">{formatLastSync(lastSyncedAt)}</p>
+              </div>
+              <Button onClick={handleManualSync} disabled={syncing || connectionStatus !== 'connected'}>
+                {syncing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Run Manual Sync
+              </Button>
+            </div>
+          </CardContent>
         </Card>
       )}
     </div>

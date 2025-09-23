@@ -2,8 +2,9 @@ import { Hono } from "hono";
 import type { Env } from './core-utils';
 import { ClientEntity, ServiceEntity, SubscriptionEntity, IntegrationStateEntity, LicensePoolEntity, LicenseAssignmentEntity, ActivityEntity } from "./entities";
 import { ok, bad, notFound, isStr } from './core-utils';
-import type { Client, MonitoringStatus, Subscription, IntegrationState, LicensePool, LicenseAssignment, Service, Activity } from "@shared/types";
+import type { Client, MonitoringStatus, Subscription, IntegrationState, LicensePool, LicenseAssignment, Service, Activity, MicrosoftSku } from "@shared/types";
 import { subDays } from "date-fns";
+import { graphFetch, graphFetchAll } from "./microsoft-graph";
 async function createActivity(env: Env, type: string, description: string) {
   const activity: Activity = {
     id: crypto.randomUUID(),
@@ -250,6 +251,84 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
       await IntegrationStateEntity.create(c.env, newState);
     }
     return ok(c, newState);
+  });
+  // Microsoft 365 integration helper endpoints
+  app.get('/api/integrations/m365/status', async (c) => {
+    const entity = new IntegrationStateEntity(c.env, 'microsoft-365');
+    const exists = await entity.exists();
+    if (!exists) {
+      return ok(c, { status: 'not_connected', lastSyncedAt: null });
+    }
+    const state = await entity.getState();
+    return ok(c, { status: state.status, lastSyncedAt: state.lastSyncedAt ?? null });
+  });
+
+  app.post('/api/integrations/m365/test', async (c) => {
+    try {
+      const skuResponse = await graphFetch<{ value: unknown[] }>(c.env, '/subscribedSkus');
+      return ok(c, { success: true, skuCount: skuResponse.value?.length ?? 0 });
+    } catch (error) {
+      console.error('[M365 TEST] Failed to reach Microsoft Graph', error);
+      return bad(c, error instanceof Error ? error.message : 'Failed to reach Microsoft Graph');
+    }
+  });
+
+  app.post('/api/integrations/m365/sync', async (c) => {
+    const entity = new IntegrationStateEntity(c.env, 'microsoft-365');
+    try {
+      const [skus, users] = await Promise.all([
+        graphFetchAll<MicrosoftSku>(c.env, '/subscribedSkus'),
+        graphFetchAll<{ id: string; displayName?: string; mail?: string }>(c.env, '/users?$select=id,displayName,mail'),
+      ]);
+      const skuMap = new Map<string, MicrosoftSku>();
+      for (const sku of skus) {
+        skuMap.set(sku.skuId, sku);
+      }
+      const clients = await ClientEntity.list(c.env).then(p => p.items);
+      const services = await ServiceEntity.list(c.env).then(p => p.items);
+      const serviceBySku = new Map<string, Service>();
+      for (const service of services) {
+        const parts = service.id.split(':');
+        if (parts.length === 2 && parts[0] === 'm365Sku') {
+          serviceBySku.set(parts[1], service);
+        }
+      }
+      const updatedClients: Client[] = [];
+      for (const user of users) {
+        const existing = clients.find(c => c.email === (user.mail ?? '').toLowerCase());
+        if (existing) continue;
+        const name = user.displayName ?? user.mail ?? `User ${user.id}`;
+        const newClient: Client = {
+          id: `m365-${user.id}`,
+          name,
+          contactPerson: name,
+          email: (user.mail ?? `${user.id}@unknown`).toLowerCase(),
+          status: 'active',
+          createdAt: Date.now(),
+        };
+        await ClientEntity.create(c.env, newClient);
+        updatedClients.push(newClient);
+      }
+      if (updatedClients.length) {
+        await createActivity(c.env, 'client_created', `${updatedClients.length} Microsoft 365 users imported`);
+      }
+      const syncTime = Date.now();
+      await entity.mutate(current => ({
+        ...current,
+        id: 'microsoft-365',
+        status: 'connected',
+        lastSyncedAt: syncTime,
+      }));
+      return ok(c, {
+        syncedAt: syncTime,
+        skuCount: skus.length,
+        userCount: users.length,
+        newClients: updatedClients.length,
+      });
+    } catch (error) {
+      console.error('[M365 SYNC] Failed', error);
+      return bad(c, error instanceof Error ? error.message : 'Failed to sync Microsoft 365 data');
+    }
   });
   // LICENSE POOLS API
   app.get('/api/license-pools', async (c) => {

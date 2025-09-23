@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
 import type { IntegrationState } from "@shared/types";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "@/components/ui/sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 export function IntegrationDetailPage() {
   const { integrationId } = useParams<{ integrationId: string }>();
   const navigate = useNavigate();
   const [integrationState, setIntegrationState] = useState<IntegrationState | null>(null);
+  const [m365Status, setM365Status] = useState<{ status: string; lastSyncedAt: number | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const integration = INTEGRATIONS_DATA.find(i => i.id === integrationId);
   useEffect(() => {
@@ -21,6 +23,10 @@ export function IntegrationDetailPage() {
         setLoading(true);
         const state = await api<IntegrationState>(`/api/integration-states/${integrationId}`);
         setIntegrationState(state);
+        if (integrationId === 'microsoft-365') {
+          const status = await api<{ status: string; lastSyncedAt: number | null }>(`/api/integrations/m365/status`);
+          setM365Status(status);
+        }
       } catch (error) {
         toast.error("Failed to fetch integration status.");
       } finally {
@@ -71,7 +77,26 @@ export function IntegrationDetailPage() {
           <Skeleton className="h-64 w-full" />
         </div>
       ) : (
-        <ConnectionGuide integration={integration} initialState={integrationState} />
+        <div className="space-y-6">
+          {integration.id === 'microsoft-365' && m365Status && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Microsoft 365 Connection</CardTitle>
+              </CardHeader>
+              <CardContent className="flex justify-between items-center">
+                <div>
+                  <p className="text-sm text-muted-foreground">Status</p>
+                  <p className="text-lg font-medium capitalize">{m365Status.status.replace('_', ' ')}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Last Sync</p>
+                  <p className="text-lg font-medium">{m365Status.lastSyncedAt ? new Date(m365Status.lastSyncedAt).toLocaleString() : 'Never synced'}</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          <ConnectionGuide integration={integration} initialState={integrationState} />
+        </div>
       )}
     </div>
   );

@@ -57,6 +57,10 @@ export interface IntegrationState {
   id: string; // Corresponds to Integration.id
   status: IntegrationStatus;
   connectedAt?: number;
+  /** Optional JSON blob with provider specific state (e.g. credentials metadata). */
+  config?: Record<string, unknown>;
+  /** Timestamp of the last successful sync from the external provider. */
+  lastSyncedAt?: number;
 }
 // Dashboard
 export interface Activity {
@@ -86,5 +90,21 @@ export interface LicenseAssignment {
   poolId: string;
   clientId: string;
   assignedSeats: number;
+  assignedAt: number;
+}
+
+export interface MicrosoftSku {
+  id: string;
+  skuId: string;
+  skuPartNumber: string;
+  availableUnits: number;
+  consumedUnits: number;
+  capabilityStatus: string;
+}
+
+export interface MicrosoftLicenseAssignment {
+  id: string;
+  skuId: string;
+  clientId: string;
   assignedAt: number;
 }
