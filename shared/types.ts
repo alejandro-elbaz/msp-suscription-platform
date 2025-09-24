@@ -77,6 +77,11 @@ export interface DashboardStats {
   servicesWithIssues: number;
   mrrTrend: { name: string; mrr: number }[];
   recentActivity: Activity[];
+  // New MSP-focused metrics
+  totalSeatsManaged: number;
+  internalVsExternalSplit: { internal: number; external: number };
+  topServices: { serviceId: string; serviceName: string; clientCount: number; totalSeats: number }[];
+  licenseUtilization: number; // percentage
 }
 // License Pools
 export interface LicensePool {
@@ -97,9 +102,13 @@ export interface MicrosoftSku {
   id: string;
   skuId: string;
   skuPartNumber: string;
-  availableUnits: number;
+  capabilityStatus?: string;
   consumedUnits: number;
-  capabilityStatus: string;
+  prepaidUnits?: {
+    enabled?: number;
+    suspended?: number;
+    warning?: number;
+  };
 }
 
 export interface MicrosoftLicenseAssignment {
@@ -107,4 +116,55 @@ export interface MicrosoftLicenseAssignment {
   skuId: string;
   clientId: string;
   assignedAt: number;
+}
+
+export interface MicrosoftSyncSummary {
+  totalUsers: number;
+  totalNewClients: number;
+  totalSubscriptions: number;
+  totalAssignedLicenses: number;
+  activeProducts: number;
+  nextRenewalDate?: number | null;
+  nextPaymentAmount: number;
+  currency?: string;
+  skuSummary: {
+    skuId: string;
+    skuPartNumber: string;
+    availableUnits: number;
+    consumedUnits: number;
+    serviceId: string;
+  }[];
+}
+
+export interface InternalSubscriptionSummaryServiceItem {
+  id: string;
+  serviceId: string;
+  serviceName: string;
+  plan: string;
+  quantity: number;
+  cost: number;
+  renewalDate: number;
+  status: SubscriptionStatus;
+  monitoringStatus?: MonitoringStatus;
+  usage?: number;
+}
+
+export interface InternalSubscriptionSummaryLicensePool {
+  id: string;
+  name: string;
+  serviceId: string;
+  serviceName: string;
+  totalSeats: number;
+  assignedSeats: number;
+}
+
+export interface InternalSubscriptionSummary {
+  activeProducts: number;
+  assignedLicenses: number;
+  nextRenewalDate: number | null;
+  nextPaymentAmount: number;
+  currency: string;
+  services: InternalSubscriptionSummaryServiceItem[];
+  licensePools: InternalSubscriptionSummaryLicensePool[];
+  graphSummary: MicrosoftSyncSummary | null;
 }

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Env } from './core-utils';
 import { ClientEntity, ServiceEntity, SubscriptionEntity, IntegrationStateEntity, LicensePoolEntity, LicenseAssignmentEntity, ActivityEntity } from "./entities";
 import { ok, bad, notFound, isStr } from './core-utils';
-import type { Client, MonitoringStatus, Subscription, IntegrationState, LicensePool, LicenseAssignment, Service, Activity, MicrosoftSku } from "@shared/types";
+import type { Client, MonitoringStatus, Subscription, IntegrationState, LicensePool, LicenseAssignment, Service, Activity, MicrosoftSku, MicrosoftSyncSummary, InternalSubscriptionSummary, DashboardStats } from "@shared/types";
 import { subDays } from "date-fns";
 import { graphFetch, graphFetchAll } from "./microsoft-graph";
 async function createActivity(env: Env, type: string, description: string) {
@@ -177,6 +177,78 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     const internalSubscriptions = allSubscriptions.filter(sub => sub.isInternal);
     return ok(c, internalSubscriptions);
   });
+  app.get('/api/internal-subscriptions/summary', async (c) => {
+    const [servicesResult, subscriptionsResult, poolsResult, assignmentsResult] = await Promise.all([
+      ServiceEntity.list(c.env),
+      SubscriptionEntity.list(c.env),
+      LicensePoolEntity.list(c.env),
+      LicenseAssignmentEntity.list(c.env),
+    ]);
+    const services = servicesResult.items;
+    const subscriptions = subscriptionsResult.items.filter(sub => sub.isInternal);
+    const pools = poolsResult.items.filter(pool => pool.id.startsWith('m365-'));
+    const assignments = assignmentsResult.items;
+    const servicesById = new Map(services.map(service => [service.id, service]));
+    let assignedLicenses = 0;
+    let nextRenewalDate: number | null = null;
+    let nextPaymentAmount = 0;
+    const currency = 'USD';
+    const serviceItems: InternalSubscriptionSummary['services'] = subscriptions.map(sub => {
+      assignedLicenses += sub.quantity;
+      nextPaymentAmount += sub.cost;
+      if (nextRenewalDate === null || sub.renewalDate < nextRenewalDate) {
+        nextRenewalDate = sub.renewalDate;
+      }
+      const service = servicesById.get(sub.serviceId);
+      return {
+        id: sub.id,
+        serviceId: sub.serviceId,
+        serviceName: service?.name ?? 'Unknown Service',
+        plan: sub.plan,
+        quantity: sub.quantity,
+        cost: sub.cost,
+        renewalDate: sub.renewalDate,
+        status: sub.status,
+        monitoringStatus: sub.monitoringStatus,
+        usage: sub.usage,
+      };
+    });
+    const assignmentsByPool = assignments.reduce((acc, assignment) => {
+      acc[assignment.poolId] = (acc[assignment.poolId] || 0) + assignment.assignedSeats;
+      return acc;
+    }, {} as Record<string, number>);
+    const licensePoolItems: InternalSubscriptionSummary['licensePools'] = pools.map(pool => {
+      const service = servicesById.get(pool.serviceId);
+      return {
+        id: pool.id,
+        name: pool.name,
+        serviceId: pool.serviceId,
+        serviceName: service?.name ?? 'Unknown Service',
+        totalSeats: pool.totalSeats,
+        assignedSeats: assignmentsByPool[pool.id] || 0,
+      };
+    });
+    const integrationState = new IntegrationStateEntity(c.env, 'microsoft-365');
+    let graphSummary: MicrosoftSyncSummary | null = null;
+    if (await integrationState.exists()) {
+      const state = await integrationState.getState();
+      if (state.config && typeof state.config === 'object' && 'summary' in state.config) {
+        const summary = (state.config as { summary?: MicrosoftSyncSummary }).summary;
+        graphSummary = summary ?? null;
+      }
+    }
+    const summary: InternalSubscriptionSummary = {
+      activeProducts: serviceItems.length,
+      assignedLicenses,
+      nextRenewalDate,
+      nextPaymentAmount,
+      currency,
+      services: serviceItems,
+      licensePools: licensePoolItems,
+      graphSummary,
+    };
+    return ok(c, summary);
+  });
   app.post('/api/internal-subscriptions', async (c) => {
     const body = await c.req.json<Omit<Subscription, 'id' | 'clientId'>>();
     const newSubscription: Subscription = {
@@ -192,20 +264,65 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
   });
   // DASHBOARD API
   app.get('/api/dashboard-stats', async (c) => {
-    const [clients, subscriptions, activities] = await Promise.all([
+    const [clients, subscriptions, activities, services, pools, assignments] = await Promise.all([
       ClientEntity.list(c.env).then(p => p.items),
       SubscriptionEntity.list(c.env).then(p => p.items),
       ActivityEntity.list(c.env).then(p => p.items),
+      ServiceEntity.list(c.env).then(p => p.items),
+      LicensePoolEntity.list(c.env).then(p => p.items),
+      LicenseAssignmentEntity.list(c.env).then(p => p.items),
     ]);
+    
     const activeClients = clients.filter(client => client.status === 'active').length;
     const activeSubscriptions = subscriptions.filter(sub => sub.status === 'active' && !sub.isInternal);
+    const internalSubscriptions = subscriptions.filter(sub => sub.status === 'active' && sub.isInternal);
     const totalMrr = activeSubscriptions.reduce((sum, sub) => sum + sub.cost, 0);
+    
     const now = Date.now();
     const thirtyDaysFromNow = now + 30 * 24 * 60 * 60 * 1000;
     const upcomingRenewals = subscriptions.filter(sub =>
       sub.renewalDate > now && sub.renewalDate <= thirtyDaysFromNow
     ).length;
+    
     const servicesWithIssues = subscriptions.filter(sub => sub.monitoringStatus === 'issue' || sub.monitoringStatus === 'degraded').length;
+    
+    // Calculate total seats managed
+    const totalSeatsManaged = assignments.reduce((sum, assignment) => sum + assignment.assignedSeats, 0);
+    
+    // Calculate internal vs external subscriptions
+    const internalVsExternalSplit = {
+      internal: internalSubscriptions.length,
+      external: activeSubscriptions.length,
+    };
+    
+    // Calculate top services by client count and seats
+    const serviceStats = new Map<string, { clientCount: Set<string>; totalSeats: number }>();
+    
+    for (const sub of subscriptions) {
+      if (sub.status === 'active') {
+        const stats = serviceStats.get(sub.serviceId) || { clientCount: new Set(), totalSeats: 0 };
+        if (sub.clientId !== 'internal') {
+          stats.clientCount.add(sub.clientId);
+        }
+        stats.totalSeats += sub.quantity;
+        serviceStats.set(sub.serviceId, stats);
+      }
+    }
+    
+    const topServices = Array.from(serviceStats.entries())
+      .map(([serviceId, stats]) => ({
+        serviceId,
+        serviceName: services.find(s => s.id === serviceId)?.name || 'Unknown',
+        clientCount: stats.clientCount.size,
+        totalSeats: stats.totalSeats,
+      }))
+      .sort((a, b) => b.clientCount - a.clientCount)
+      .slice(0, 5);
+    
+    // Calculate license utilization
+    const totalAvailable = pools.reduce((sum, pool) => sum + pool.totalSeats, 0);
+    const licenseUtilization = totalAvailable > 0 ? Math.round((totalSeatsManaged / totalAvailable) * 100) : 0;
+    
     const mrrTrend = Array.from({ length: 6 }, (_, i) => {
       const date = subDays(new Date(), (5 - i) * 30);
       const month = date.toLocaleString('default', { month: 'short' });
@@ -213,8 +330,10 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
       const monthMrr = i === 5 ? totalMrr : totalMrr * randomFactor;
       return { name: month, mrr: Math.round(monthMrr / 100) };
     });
+    
     const recentActivity = activities.sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
-    return ok(c, {
+    
+    const stats: DashboardStats = {
       totalMrr,
       activeClients,
       upcomingRenewals,
@@ -222,7 +341,13 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
       servicesWithIssues,
       mrrTrend,
       recentActivity,
-    });
+      totalSeatsManaged,
+      internalVsExternalSplit,
+      topServices,
+      licenseUtilization,
+    };
+    
+    return ok(c, stats);
   });
   // INTEGRATIONS API
   app.get('/api/integration-states', async (c) => {
@@ -237,19 +362,28 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
   });
   app.post('/api/integration-states/:id', async (c) => {
     const { id } = c.req.param();
-    const { status } = await c.req.json<{ status: IntegrationState['status'] }>();
-    if (!status) return bad(c, 'Status is required');
+    const body = await c.req.json<Partial<IntegrationState>>();
+    if (!body.status) return bad(c, 'Status is required');
     const stateEntity = new IntegrationStateEntity(c.env, id);
+    if (await stateEntity.exists()) {
+      const updated = await stateEntity.mutate(current => ({
+        ...current,
+        id,
+        status: body.status!,
+        connectedAt: body.status === 'connected' ? current.connectedAt ?? Date.now() : current.connectedAt,
+        lastSyncedAt: body.lastSyncedAt ?? current.lastSyncedAt,
+        config: body.config ? { ...current.config, ...body.config } : current.config,
+      }));
+      return ok(c, updated);
+    }
     const newState: IntegrationState = {
       id,
-      status,
-      connectedAt: status === 'connected' ? Date.now() : undefined,
+      status: body.status,
+      connectedAt: body.status === 'connected' ? Date.now() : undefined,
+      config: body.config,
+      lastSyncedAt: body.lastSyncedAt,
     };
-    if (await stateEntity.exists()) {
-      await stateEntity.save(newState);
-    } else {
-      await IntegrationStateEntity.create(c.env, newState);
-    }
+    await IntegrationStateEntity.create(c.env, newState);
     return ok(c, newState);
   });
   // Microsoft 365 integration helper endpoints
@@ -257,10 +391,13 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     const entity = new IntegrationStateEntity(c.env, 'microsoft-365');
     const exists = await entity.exists();
     if (!exists) {
-      return ok(c, { status: 'not_connected', lastSyncedAt: null });
+      return ok(c, { status: 'not_connected', lastSyncedAt: null, summary: null });
     }
     const state = await entity.getState();
-    return ok(c, { status: state.status, lastSyncedAt: state.lastSyncedAt ?? null });
+    const summary = (state.config && typeof state.config === 'object' && 'summary' in state.config)
+      ? (state.config as { summary?: MicrosoftSyncSummary }).summary ?? null
+      : null;
+    return ok(c, { status: state.status, lastSyncedAt: state.lastSyncedAt ?? null, summary });
   });
 
   app.post('/api/integrations/m365/test', async (c) => {
@@ -276,54 +413,213 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
   app.post('/api/integrations/m365/sync', async (c) => {
     const entity = new IntegrationStateEntity(c.env, 'microsoft-365');
     try {
+      const stateEntity = new IntegrationStateEntity(c.env, 'microsoft-365');
+      const existingState = await stateEntity.exists() ? await stateEntity.getState() : undefined;
+      const defaultCost = existingState?.config && typeof existingState.config === 'object' && 'defaultSeatCost' in existingState.config
+        ? Number((existingState.config as Record<string, unknown>).defaultSeatCost)
+        : undefined;
       const [skus, users] = await Promise.all([
         graphFetchAll<MicrosoftSku>(c.env, '/subscribedSkus'),
-        graphFetchAll<{ id: string; displayName?: string; mail?: string }>(c.env, '/users?$select=id,displayName,mail'),
+        graphFetchAll<{ id: string; displayName?: string; mail?: string; assignedLicenses?: { skuId?: string | null }[] }>(c.env, '/users?$select=id,displayName,mail,assignedLicenses'),
       ]);
       const skuMap = new Map<string, MicrosoftSku>();
       for (const sku of skus) {
-        skuMap.set(sku.skuId, sku);
+        if (sku.skuId) {
+          skuMap.set(sku.skuId, sku);
+        }
       }
       const clients = await ClientEntity.list(c.env).then(p => p.items);
       const services = await ServiceEntity.list(c.env).then(p => p.items);
+      const subscriptions = await SubscriptionEntity.list(c.env).then(p => p.items);
+      const licenseAssignments = await LicenseAssignmentEntity.list(c.env).then(p => p.items);
+      const pools = await LicensePoolEntity.list(c.env).then(p => p.items);
+
+      const clientsByEmail = new Map<string, Client>();
+      const clientsById = new Map<string, Client>();
+      for (const client of clients) {
+        clientsById.set(client.id, client);
+        if (client.email) {
+          clientsByEmail.set(client.email.toLowerCase(), client);
+        }
+      }
+
       const serviceBySku = new Map<string, Service>();
+      const serviceById = new Map<string, Service>();
       for (const service of services) {
+        serviceById.set(service.id, service);
         const parts = service.id.split(':');
         if (parts.length === 2 && parts[0] === 'm365Sku') {
           serviceBySku.set(parts[1], service);
         }
       }
+
+      const poolById = new Map<string, LicensePool>(pools.map(pool => [pool.id, pool]));
+      const assignmentSet = new Set(licenseAssignments.map(a => `${a.clientId}:${a.poolId}`));
+      const subscriptionByKey = new Map<string, Subscription>(subscriptions.map(sub => [`${sub.clientId}:${sub.serviceId}`, sub]));
+
       const updatedClients: Client[] = [];
+      const newSubscriptions: Subscription[] = [];
+      const newAssignments: LicenseAssignment[] = [];
+      const subscriptionSeatCounts = new Map<string, number>();
+
       for (const user of users) {
-        const existing = clients.find(c => c.email === (user.mail ?? '').toLowerCase());
-        if (existing) continue;
-        const name = user.displayName ?? user.mail ?? `User ${user.id}`;
-        const newClient: Client = {
-          id: `m365-${user.id}`,
-          name,
-          contactPerson: name,
-          email: (user.mail ?? `${user.id}@unknown`).toLowerCase(),
-          status: 'active',
-          createdAt: Date.now(),
-        };
-        await ClientEntity.create(c.env, newClient);
-        updatedClients.push(newClient);
+        const email = (user.mail ?? `${user.id}@unknown`).toLowerCase();
+        let client = clientsByEmail.get(email);
+        if (!client) {
+          const name = user.displayName ?? user.mail ?? `User ${user.id}`;
+          const newClient: Client = {
+            id: `m365-${user.id}`,
+            name,
+            contactPerson: name,
+            email,
+            status: 'active',
+            createdAt: Date.now(),
+          };
+          await ClientEntity.create(c.env, newClient);
+          clients.push(newClient);
+          clientsByEmail.set(email, newClient);
+          clientsById.set(newClient.id, newClient);
+          updatedClients.push(newClient);
+          client = newClient;
+        }
+        if (!client) continue;
+
+        const assigned = user.assignedLicenses ?? [];
+        for (const license of assigned) {
+          const skuId = license.skuId ?? undefined;
+          if (!skuId) continue;
+          const service = serviceBySku.get(skuId);
+          const serviceId = service ? service.id : `m365Sku:${skuId}`;
+          let resolvedService = service;
+          if (!resolvedService) {
+            resolvedService = await ServiceEntity.create(c.env, {
+              id: serviceId,
+              name: skuMap.get(skuId)?.skuPartNumber ?? `Microsoft 365 SKU ${skuId}`,
+              category: 'SaaS',
+              description: 'Imported from Microsoft 365',
+            });
+            serviceBySku.set(skuId, resolvedService);
+            serviceById.set(resolvedService.id, resolvedService);
+            await createActivity(c.env, 'service_created', `Microsoft 365 SKU added: ${resolvedService.name}`);
+          }
+
+          const poolId = `m365-${skuId}`;
+          let pool = poolById.get(poolId);
+          const enabledUnits = skuMap.get(skuId)?.prepaidUnits?.enabled ?? skuMap.get(skuId)?.consumedUnits ?? 0;
+          if (!pool) {
+            pool = {
+              id: poolId,
+              name: skuMap.get(skuId)?.skuPartNumber ?? `Microsoft SKU ${skuId}`,
+              serviceId: resolvedService.id,
+              totalSeats: enabledUnits,
+            };
+            await LicensePoolEntity.create(c.env, pool);
+            poolById.set(poolId, pool);
+          } else {
+            const poolEntity = new LicensePoolEntity(c.env, poolId);
+            await poolEntity.mutate(current => ({
+              ...current,
+              serviceId: resolvedService!.id,
+              totalSeats: enabledUnits,
+            }));
+          }
+
+          const assignmentKey = `${client.id}:${poolId}`;
+          if (!assignmentSet.has(assignmentKey)) {
+            const assignment: LicenseAssignment = {
+              id: `m365-${client.id}-${skuId}`,
+              poolId,
+              clientId: client.id,
+              assignedSeats: 1,
+              assignedAt: Date.now(),
+            };
+            await LicenseAssignmentEntity.create(c.env, assignment);
+            assignmentSet.add(assignmentKey);
+            newAssignments.push(assignment);
+          }
+
+          const subscriptionKey = `${client.id}:${resolvedService.id}`;
+          subscriptionSeatCounts.set(subscriptionKey, (subscriptionSeatCounts.get(subscriptionKey) ?? 0) + 1);
+        }
+      }
+
+      for (const [subscriptionKey, quantity] of subscriptionSeatCounts) {
+        const [clientId, serviceId] = subscriptionKey.split(':');
+        const existing = subscriptionByKey.get(subscriptionKey);
+        if (existing) {
+          const subEntity = new SubscriptionEntity(c.env, existing.id);
+          await subEntity.mutate(current => ({
+            ...current,
+            quantity,
+            status: 'active',
+            isInternal: current.isInternal ?? false,
+          }));
+        } else {
+          const newSubscription: Subscription = {
+            id: crypto.randomUUID(),
+            clientId,
+            serviceId,
+            plan: serviceById.get(serviceId)?.name ?? 'Microsoft 365 License',
+            quantity,
+            cost: 0,
+            renewalDate: Date.now() + 30 * 24 * 60 * 60 * 1000,
+            status: 'active',
+            monitoringStatus: 'ok',
+            usage: 0,
+            isInternal: false,
+          };
+          await SubscriptionEntity.create(c.env, newSubscription);
+          subscriptionByKey.set(subscriptionKey, newSubscription);
+          newSubscriptions.push(newSubscription);
+        }
       }
       if (updatedClients.length) {
         await createActivity(c.env, 'client_created', `${updatedClients.length} Microsoft 365 users imported`);
       }
+      if (newSubscriptions.length) {
+        await createActivity(c.env, 'subscription_created', `${newSubscriptions.length} Microsoft 365 subscriptions created`);
+      }
       const syncTime = Date.now();
-      await entity.mutate(current => ({
+      const totalAssignedLicenses = Array.from(subscriptionSeatCounts.values()).reduce((acc, qty) => acc + qty, 0);
+      const activeProducts = subscriptionSeatCounts.size;
+      const defaultSeatCost = Number.isFinite(defaultCost) ? Number(defaultCost) : 0;
+      const nextRenewalDate = Date.now() + 30 * 24 * 60 * 60 * 1000;
+      const nextPaymentAmount = totalAssignedLicenses * defaultSeatCost;
+
+      const summary: MicrosoftSyncSummary = {
+        totalUsers: users.length,
+        totalNewClients: updatedClients.length,
+        totalSubscriptions: subscriptionSeatCounts.size,
+        totalAssignedLicenses,
+        activeProducts,
+        nextRenewalDate,
+        nextPaymentAmount,
+        currency: 'USD',
+        skuSummary: skus
+          .filter(sku => sku.skuId)
+          .map(sku => ({
+            skuId: sku.skuId!,
+            skuPartNumber: sku.skuPartNumber,
+            availableUnits: sku.prepaidUnits?.enabled ?? 0,
+            consumedUnits: sku.consumedUnits,
+            serviceId: serviceBySku.get(sku.skuId!)?.id ?? `m365Sku:${sku.skuId}`,
+          })),
+      };
+      const updatedState = await entity.mutate(current => ({
         ...current,
         id: 'microsoft-365',
         status: 'connected',
         lastSyncedAt: syncTime,
+        connectedAt: current.connectedAt ?? syncTime,
+        config: { ...(current.config ?? {}), summary },
       }));
       return ok(c, {
         syncedAt: syncTime,
         skuCount: skus.length,
         userCount: users.length,
         newClients: updatedClients.length,
+        summary,
+        state: updatedState,
       });
     } catch (error) {
       console.error('[M365 SYNC] Failed', error);

@@ -17,6 +17,7 @@ export const INTEGRATIONS_DATA: Integration[] = [
         description: 'Find your Tenant ID in the Microsoft Entra admin center and paste it below.',
         fields: [
           { id: 'tenantId', label: 'Microsoft 365 Tenant ID', type: 'text', placeholder: 'e.g., 12345678-abcd-1234-abcd-1234567890ab' },
+          { id: 'defaultSeatCost', label: 'Default License Cost (USD)', type: 'number', placeholder: 'e.g., 18.00' },
         ],
       },
       {

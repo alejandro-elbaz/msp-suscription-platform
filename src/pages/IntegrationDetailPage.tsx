@@ -1,38 +1,40 @@
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { INTEGRATIONS_DATA } from "@/lib/integrations-data";
-import { ArrowLeft, AlertTriangle } from "lucide-react";
+import { ArrowLeft, AlertTriangle, CheckCircle, Info } from "lucide-react";
 import { ConnectionGuide } from "@/components/integrations/ConnectionGuide";
 import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
-import type { IntegrationState } from "@shared/types";
+import type { IntegrationState, MicrosoftSyncSummary } from "@shared/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "@/components/ui/sonner";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 export function IntegrationDetailPage() {
   const { integrationId } = useParams<{ integrationId: string }>();
   const navigate = useNavigate();
   const [integrationState, setIntegrationState] = useState<IntegrationState | null>(null);
-  const [m365Status, setM365Status] = useState<{ status: string; lastSyncedAt: number | null } | null>(null);
+  const [m365Status, setM365Status] = useState<{ status: string; lastSyncedAt: number | null; summary: MicrosoftSyncSummary | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const integration = INTEGRATIONS_DATA.find(i => i.id === integrationId);
-  useEffect(() => {
+  const fetchState = async () => {
     if (!integrationId) return;
-    const fetchState = async () => {
-      try {
-        setLoading(true);
-        const state = await api<IntegrationState>(`/api/integration-states/${integrationId}`);
-        setIntegrationState(state);
-        if (integrationId === 'microsoft-365') {
-          const status = await api<{ status: string; lastSyncedAt: number | null }>(`/api/integrations/m365/status`);
-          setM365Status(status);
-        }
-      } catch (error) {
-        toast.error("Failed to fetch integration status.");
-      } finally {
-        setLoading(false);
+    try {
+      setLoading(true);
+      const state = await api<IntegrationState>(`/api/integration-states/${integrationId}`);
+      setIntegrationState(state);
+      if (integrationId === 'microsoft-365') {
+        const status = await api<{ status: string; lastSyncedAt: number | null; summary: MicrosoftSyncSummary | null }>(`/api/integrations/m365/status`);
+        setM365Status(status);
       }
-    };
+    } catch (error) {
+      toast.error("Failed to fetch integration status.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
     fetchState();
   }, [integrationId]);
   if (!integration) {
@@ -78,24 +80,28 @@ export function IntegrationDetailPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          {integration.id === 'microsoft-365' && m365Status && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Microsoft 365 Connection</CardTitle>
-              </CardHeader>
-              <CardContent className="flex justify-between items-center">
-                <div>
-                  <p className="text-sm text-muted-foreground">Status</p>
-                  <p className="text-lg font-medium capitalize">{m365Status.status.replace('_', ' ')}</p>
+          {integration.id === 'microsoft-365' && m365Status && m365Status.status === 'connected' && (
+            <Alert className="border-green-200 bg-green-50/50">
+              <CheckCircle className="h-4 w-4 text-green-600" />
+              <AlertDescription className="space-y-2">
+                <div className="font-medium text-green-900">Microsoft 365 is connected successfully!</div>
+                <div className="text-sm text-green-800">
+                  Your Microsoft 365 data is being synced to the Internal Subscriptions page. 
+                  {m365Status.summary && (
+                    <span> Currently tracking {m365Status.summary.totalUsers} users and {m365Status.summary.totalAssignedLicenses} licenses.</span>
+                  )}
                 </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Last Sync</p>
-                  <p className="text-lg font-medium">{m365Status.lastSyncedAt ? new Date(m365Status.lastSyncedAt).toLocaleString() : 'Never synced'}</p>
-                </div>
-              </CardContent>
-            </Card>
+                <Button 
+                  variant="link" 
+                  className="h-auto p-0 text-green-700 hover:text-green-900" 
+                  onClick={() => navigate('/internal-subscriptions')}
+                >
+                  View synced data in Internal Subscriptions →
+                </Button>
+              </AlertDescription>
+            </Alert>
           )}
-          <ConnectionGuide integration={integration} initialState={integrationState} />
+          <ConnectionGuide integration={integration} initialState={integrationState} onRefetch={fetchState} />
         </div>
       )}
     </div>

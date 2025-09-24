@@ -19,6 +19,7 @@ import { IntegrationsPage } from "@/pages/IntegrationsPage";
 import { IntegrationDetailPage } from "@/pages/IntegrationDetailPage";
 import SettingsPage from "@/pages/SettingsPage";
 import InternalSubscriptionsPage from "@/pages/InternalSubscriptionsPage";
+import ExternalSubscriptionsPage from "@/pages/ExternalSubscriptionsPage";
 import LicensePoolsPage from "@/pages/LicensePoolsPage";
 const router = createBrowserRouter([
   {
@@ -44,6 +45,10 @@ const router = createBrowserRouter([
       {
         path: "/internal-subscriptions",
         element: <InternalSubscriptionsPage />,
+      },
+      {
+        path: "/external-subscriptions",
+        element: <ExternalSubscriptionsPage />,
       },
       {
         path: "/license-pools",

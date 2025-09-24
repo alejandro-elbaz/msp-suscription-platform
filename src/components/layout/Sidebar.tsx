@@ -1,11 +1,12 @@
 import { NavLink } from "react-router-dom";
-import { Package, Home, Users, Briefcase, BarChart3, Plug, Settings, ShieldCheck, Library } from "lucide-react";
+import { Package, Home, Users, Briefcase, BarChart3, Plug, Settings, ShieldCheck, Library, Users2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 const navItems = [
   { to: "/", icon: Home, label: "Dashboard" },
   { to: "/clients", icon: Users, label: "Clients" },
   { to: "/services", icon: Briefcase, label: "Services" },
   { to: "/internal-subscriptions", icon: ShieldCheck, label: "Internal Subscriptions" },
+  { to: "/external-subscriptions", icon: Users2, label: "Client Subscriptions" },
   { to: "/license-pools", icon: Library, label: "License Pools" },
   { to: "/integrations", icon: Plug, label: "Integrations" },
   { to: "/reports", icon: BarChart3, label: "Reports" },

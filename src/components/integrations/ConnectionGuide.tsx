@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,8 +14,9 @@ import { api } from '@/lib/api-client';
 interface ConnectionGuideProps {
   integration: Integration;
   initialState: IntegrationState | null;
+  onRefetch?: () => void | Promise<void>;
 }
-export function ConnectionGuide({ integration, initialState }: ConnectionGuideProps) {
+export function ConnectionGuide({ integration, initialState, onRefetch }: ConnectionGuideProps) {
   const [connectionStatus, setConnectionStatus] = useState<IntegrationStatus>('not_connected');
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
@@ -26,36 +27,79 @@ export function ConnectionGuide({ integration, initialState }: ConnectionGuidePr
       setLastSyncedAt(initialState.lastSyncedAt ?? null);
     }
   }, [initialState]);
-  const formSchema = z.object(
+  const formSchema = useMemo(() => z.object(
     integration.steps.reduce((acc, step) => {
       if (step.fields) {
         step.fields.forEach(field => {
-          acc[field.id] = z.string().min(1, `${field.label} is required.`);
+          if (field.type === 'number') {
+            acc[field.id] = z.string().optional();
+          } else {
+            acc[field.id] = z.string().min(1, `${field.label} is required.`);
+          }
         });
       }
       return acc;
-    }, {} as Record<string, z.ZodString>)
-  );
+    }, {} as Record<string, z.ZodTypeAny>)
+  ), [integration.steps]);
   type FormData = z.infer<typeof formSchema>;
+
+  const defaultValues = useMemo(() => {
+    if (!initialState?.config || typeof initialState.config !== 'object') return {} as Partial<FormData>;
+    const values: Record<string, string> = {};
+    integration.steps.forEach(step => {
+      step.fields?.forEach(field => {
+        const raw = (initialState.config as Record<string, unknown>)[field.id];
+        if (raw === undefined || raw === null) return;
+        if (field.type === 'number') {
+          values[field.id] = typeof raw === 'number' ? raw.toString() : String(raw);
+        } else if (typeof raw === 'string') {
+          values[field.id] = raw;
+        }
+      });
+    });
+    return values as Partial<FormData>;
+  }, [initialState, integration.steps]);
+
   const {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
+    reset,
   } = useForm<FormData>({
     resolver: zodResolver(formSchema),
+    defaultValues,
   });
+  useEffect(() => {
+    reset(defaultValues);
+  }, [defaultValues, reset]);
   const onSubmit = async (data: FormData) => {
     toast.info(`Saving credentials for ${integration.name}...`);
     try {
-      await api(`/api/integration-states/${integration.id}`, {
+      const payloadConfig: Record<string, unknown> = {};
+      integration.steps.forEach(step => {
+        step.fields?.forEach(field => {
+          const value = data[field.id as keyof FormData];
+          if (field.type === 'number') {
+            const numeric = value !== undefined && value !== null && String(value).trim().length > 0 ? Number(value) : undefined;
+            if (numeric !== undefined && !Number.isNaN(numeric)) {
+              payloadConfig[field.id] = numeric;
+            }
+          } else if (typeof value === 'string') {
+            payloadConfig[field.id] = value;
+          }
+        });
+      });
+      const updated = await api<IntegrationState>(`/api/integration-states/${integration.id}`, {
         method: 'POST',
         body: JSON.stringify({
           status: 'connected',
-          config: data,
+          config: payloadConfig,
         }),
       });
-      setConnectionStatus('connected');
+      setConnectionStatus(updated.status);
+      setLastSyncedAt(updated.lastSyncedAt ?? null);
       toast.success(`Credentials saved. Run a test to verify connectivity.`);
+      if (onRefetch) await Promise.resolve(onRefetch());
     } catch (error) {
       toast.error("Failed to save integration status.", {
         description: error instanceof Error ? error.message : "Unknown error",
@@ -81,6 +125,7 @@ export function ConnectionGuide({ integration, initialState }: ConnectionGuidePr
           description: `Found ${result.skuCount ?? 0} subscribed SKUs.`,
         });
         setConnectionStatus('connected');
+        if (onRefetch) await Promise.resolve(onRefetch());
       } else {
         toast.error('Test completed with warnings.');
       }
@@ -96,13 +141,14 @@ export function ConnectionGuide({ integration, initialState }: ConnectionGuidePr
   const handleManualSync = async () => {
     setSyncing(true);
     try {
-      const result = await api<{ syncedAt: number }>(`/api/integrations/m365/sync`, {
+      const result = await api<{ syncedAt: number; summary?: unknown }>(`/api/integrations/m365/sync`, {
         method: 'POST',
       });
       setLastSyncedAt(result.syncedAt);
       toast.success('Microsoft 365 data synced.', {
         description: `Last sync: ${formatLastSync(result.syncedAt)}`,
       });
+      if (onRefetch) await Promise.resolve(onRefetch());
     } catch (error) {
       toast.error('Sync failed', {
         description: error instanceof Error ? error.message : 'Unknown error',
