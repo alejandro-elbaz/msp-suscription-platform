@@ -41,7 +41,7 @@ export interface IntegrationStep {
   fields?: {
     id: string;
     label: string;
-    type: 'text' | 'password' | 'file';
+    type: 'text' | 'password' | 'file' | 'number';
     placeholder?: string;
   }[];
 }
@@ -52,6 +52,22 @@ export interface Integration {
   logo: LucideIcon | ((props: any) => JSX.Element);
   status: IntegrationStatus;
   steps: IntegrationStep[];
+  // Enhanced integration details
+  features?: string[];
+  syncCapabilities?: {
+    dataTypes: string[];
+    syncFrequency: string;
+    realTime: boolean;
+  };
+  pricing?: {
+    model: string;
+    includedIn: string[];
+  };
+  security?: {
+    encryption: string;
+    compliance: string[];
+    dataLocation: string;
+  };
 }
 export interface IntegrationState {
   id: string; // Corresponds to Integration.id
